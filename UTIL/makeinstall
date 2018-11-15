@@ -1,0 +1,486 @@
+#!/usr/bin/perl
+
+$PACKAGE="makeinstall";
+$VERSION="0.4";
+$COPYLEFT="(c) R.Jaksa 2009, GPLv3";
+$PROJECT="makeutils";
+
+$CR_="\033[31m"; # color red
+$CG_="\033[32m"; # color green
+$CM_="\033[35m"; # color magenta
+$CC_="\033[36m"; # color cyan
+$CW_="\033[37m"; # color white
+$CD_="\033[0m";  # color default
+
+# ------------------------------------------------------------------------ NEWS
+#
+# 0.4 - bin/ install subdirectories bugfix
+#     - default Y/n answer for other letters is now the "no"
+#     - dat/dat/ bugfix
+#     - added lib.pl/ support
+#
+# ------------------------------------------------------------------------ HELP
+$HELP_MAIN=<<EOF;
+
+NAME
+    makeinstall - automatic make install
+
+USAGE
+    makeinstall [OPTIONS] FILES
+
+DESCRIPTION
+    Install FILES into system.  Automatically decide appropriate
+    directory in system to install to.  The type of file is guessed
+    from the filename, the type of bin/xyz is bin and the file xyz
+    has to be installed into /bin directory in system. 
+
+OPTIONS
+    -h  This help.
+    -d  Debug.
+    -n  Dummy - print commands, but don\'t execute them.
+    -f  Forced noninteractive mode - proceed without questions.
+    -q  Query mode - no actions, only context detection.
+    -p PREFIX
+        Set the installation PREFIX.
+
+MODES
+    Three modes of installation are recognized.  Particular mode
+    type is indicated in the debug message.  They are:
+
+    ${CC_}usr${CD_} This standard mode is active for any /usr type prefix.
+    ${CC_}dir${CD_} This is /opt style installation for the /opt prefix or for
+        any unknown prefix.
+    ${CC_}map${CD_} This is /map style installation for the /map prefix.
+
+    First the map mode is tried, then the /opt prefix, then the
+    usr mode.  The last instance is /tmp directory.
+
+DIRECTORIES
+    Supported types of installation directories are:
+
+    ${CC_}bin${CD_}   Standard bin/ directory.
+    ${CC_}lib${CD_}   Standard lib/ directory.
+    ${CC_}inc${CD_}   Standard include/ directory (inc/ in the map mode).
+    ${CC_}dat${CD_}   The share/ directory in usr mode, dat/ in other modes.
+
+    Source based libraries:
+
+    ${CC_}libc${CD_}  The lib.c/ directory for the C language sources.
+    ${CC_}libpl${CD_} The lib.pl/ directory for the perl language sources.
+
+REQUIRES
+    The ${CC_}getversion${CD_} is required for identification of the pacakage
+    and project context.
+
+EOF
+
+sub printhelp {
+  my $help=$HELP_MAIN;
+  $help.="VERSION\n    $PACKAGE.$VERSION $COPYLEFT\n\n";
+  $help=~s/(\n|[ \t])(([A-Z\/-]+[ ]?){4,})/$1$CC_$2$CD_/g;
+  $help=~s/(\n[ ]*)(-[a-zA-Z0-9]+)([ \t])/$1$CC_$2$CD_$3/g;
+  $help=~s/\[([+-])?([A-Z]+)\]/\[$1$CC_$2$CD_\]/g;
+  print $help; }
+
+# ----------------------------------------------------------------------- PRINT
+
+$HDRLEN=16;
+sub hspace { my $e;
+  for(my $i=0;$i<$HDRLEN-length($_[0]);$i++) { $e.=" "; }
+  return $e; }
+
+sub hprint { print hspace($_[0]).$_[0].": "; }
+sub dhprint { print $CM_.hspace($_[0]).$_[0].$CD_.": "; }
+sub xprint { print hspace($_[0]).$_[0].": $CG_".$_[1]."$CD_ $_[2]\n"; }
+sub dprint { print $CM_.hspace($_[0]).$_[0]."$CD_: $CG_".$_[1]."$CD_\n"; }
+sub eprint { xprint "",$CR_.$_[0]; }
+sub xprintnl { for(my $i=0;$i<$HDRLEN;$i++) { print " "; } print ":\n"; }
+
+# ------------------------------------------------------------------------ ARGV
+
+foreach $i (@ARGV) { if($i eq "-h") { printhelp(); exit 0; }}
+foreach $i (@ARGV) { if($i eq "-d") { $DEBUG=1; $i=""; last; }}
+foreach $i (@ARGV) { if($i eq "-f") { $FORCED=1; $i=""; last; }}
+foreach $i (@ARGV) { if($i eq "-q") { $QUERY=1; $i=""; last; }}
+
+xprintnl;
+
+# DUMMY output
+foreach $i (@ARGV) { if($i eq "-n")  { $DUMMY=1; $i=""; last; }}
+xprint "",$CD_."dummy run" if $DUMMY;
+
+# the PREFIX
+undef $PREFIX;
+for($i=0;$i<$#ARGV;$i++) { if($ARGV[$i] eq "-p" and not $ARGV[$i+1] eq "") {
+    $PREFIX=$ARGV[$i+1]; $ARGV[$i]=""; $ARGV[$i+1]=""; last; }}
+dprint "prefix",$PREFIX if $DEBUG and $PREFIX;
+
+# everything left are files to install
+undef %FILES;
+foreach $i (@ARGV) {
+  next if $i eq "";
+  $FILES{$i}->{input}=$i; }
+
+# inputs debug message
+if($DEBUG) {
+  dhprint "inputs";
+  foreach $k (keys %FILES) { print $CG_.$k.$CD_." "; }
+  print "\n"; }
+
+# ------------------------------------------------------------- PREFIX ANALYSIS
+
+$INSTTYPE="map" if $PREFIX eq "/map";
+$INSTTYPE="dir" if $PREFIX eq "/opt";
+$INSTTYPE="usr" if $PREFIX=~/^\/usr/;
+$INSTTYPE="dir" if $PREFIX eq "/tmp";
+$INSTTYPE="dir" if not $INSTTYPE;
+
+sub try {
+  if(-w $_[1]) {
+    dprint "existing prefix",$_[1] if $DEBUG;
+    $INSTTYPE=$_[0];
+    return $_[1]; }
+  dprint "missing prefix",$_[1] if $DEBUG;
+  return; }
+
+$PREFIX=try "map","/map" if not $PREFIX;
+$PREFIX=try "dir","/opt" if not $PREFIX;
+$PREFIX=try "usr","/usr/local" if not $PREFIX;
+$PREFIX=try "usr","/usr" if not $PREFIX;
+$PREFIX=try "dir","/tmp" if not $PREFIX;
+
+dprint "install mode",$INSTTYPE if $DEBUG;
+
+# ------------------------------------------------------------------ GETVERSION
+
+undef %PKG;
+$PKG{package}=`getversion -pkg`;
+$PKG{version}=`getversion -ver`;
+$PKG{project}=`getversion -prj`;
+$PKG{pkgname}=`getversion -pnm`;
+foreach $k (keys %PKG) { $PKG{$k}=~s/\n$//; }
+
+if($DEBUG) {
+  dprint "package",$PKG{package};
+  dprint "version",$PKG{version};
+  dprint "project",$PKG{project};
+  dprint "pkgname",$PKG{pkgname}; }
+
+# ----------------------------------------------------------------- DIRECTORIES
+# undef $PACKAGE; $PACKAGE=$PKG{package}
+
+if($INSTTYPE eq "map") {
+  $BOX="/box/$PKG{project}/$PKG{pkgname}";
+  $MAP="/map/$PKG{package}";
+  xprint "box directory",$BOX;
+  xprint "map directory",$MAP; }
+
+if($INSTTYPE eq "dir") {
+  $OPT="$PREFIX/$PKG{package}";
+  xprint "opt directory",$OPT; }
+
+if($INSTTYPE eq "usr") {
+  $USR=$PREFIX;
+  xprint "usr directory",$USR; }
+
+# -------------------------------------------------------- FILES PATHS ANALYSIS
+
+foreach $k (keys %FILES) {
+  my $file=$k;
+  while(not -f $file and $file=~/\//) { $file=$2 if $file=~/^(.*?)\/(.*)$/; }
+  if(-f $file) {
+    $FILES{$k}->{path}=$file; }
+  else {
+    eprint "Cannot find local file: $k"; exit 1; }}
+
+# -------------------------------------------------------------- TYPES ANALYSIS
+
+# 1st check the prefix
+foreach $k (keys %FILES) {
+  $FILES{$k}->{type}="bin" if $k=~/[^a-z]bin\// or $k=~/^bin\//;
+  $FILES{$k}->{type}="bim" if $k=~/[^a-z]bim\// or $k=~/^bim\//;
+  $FILES{$k}->{type}="dat" if $k=~/[^a-z]dat\// or $k=~/^dat\//;
+  $FILES{$k}->{type}="libc" if $k=~/[^a-z]lib\.c\// or $k=~/^lib\.c\//;
+  $FILES{$k}->{type}="libpl" if $k=~/[^a-z]lib\.pl\// or $k=~/^lib\.pl\//;
+  $FILES{$k}->{type}="lib" if $k=~/[^a-z]lib\// or $k=~/^lib\//;
+  $FILES{$k}->{type}="inc" if $k=~/[^a-z]inc\// or $k=~/^inc\//;
+  # etc
+}
+
+# 2nd some autodetect
+foreach $k (keys %FILES) {
+  if(not $FILES{$k}->{type}) {
+    # guess it's bin if it is executable
+    if(-x $FILES{$k}->{path}) {
+      dprint "type guess","$k$CD_ (bin)" if $DEBUG;
+      $FILES{$k}->{type}="bin"; }}}
+
+# group files by type
+undef %TYPE;
+foreach $k (keys %FILES) {
+  if($FILES{$k}->{type}) { push @{$TYPE{$FILES{$k}->{type}}},$FILES{$k}->{path}; }
+  else { push @{$TYPE{unknown}},$FILES{$k}->{path}; }}
+
+# announce
+foreach $t (sort keys %TYPE) {
+  hprint "$t files";
+  foreach $f (@{$TYPE{$t}}) { print $CG_.$f.$CD_." "; }
+  print "\n"; }
+
+# -------------------------------------------------------------------- QUESTION
+
+sub answer_yes {
+  if($QUERY) { xprintnl(); exit 0; }
+  return 1 if $FORCED;
+  my $s=$_[0]; # the question
+  my $l=length($s);
+  my $e=""; for(my $i=0;$i<$HDRLEN-$l;$i++) { $e.=" "; }
+  print $e.$s.": ";
+  print $m if $m;
+  # get answer
+  print $CG_;
+  system "stty", '-icanon', 'eol', "\001";
+  my $k; while(not $k=~/[YyNnQq\n]/) { $k=getc(STDIN); }
+  system "stty", 'icanon', 'eol', '^@';
+  print $CD_; print "\n" if not $k eq "\n";
+  # yes
+  if($k=~/[yY\n]/) { return 1; }
+  # no
+  return 0; }
+
+if(not answer_yes("proceed? Y/n")) {
+  eprint("did nothing, bye...");
+  xprintnl();
+  exit 0; }
+
+# --------------------------------------------------------------------- INSTALL
+
+# @dir=dir2array(".");
+sub dir2array {
+  my $d=$_[0]; $d="." if not $_[0];
+  if(not opendir(DIR,$d)) { eprint("Can't open directory $CD_$d$CR_ ($!)"); exit 1; }
+  my @dir=readdir(DIR);
+  closedir(DIR);
+  undef my @out;
+  foreach my $i (@dir) {
+    next if $i eq ".";
+    next if $i eq "..";
+    push @out,$i; }
+  return @out; }
+
+# ($dirs,$files)=dir2array_rec(".","/bin");
+# recursive search in /bin, returns paths relative to "/bin/."
+# $dirs and $files are references to arrays
+sub dir2array_rec {
+  my $dir=$_[0]; # directory to search in, relative to $pre
+  my $pre=$_[1]; $pre="" if not $pre; # directory path
+  my @dir=dir2array("$pre/$dir");
+  undef my @dirs; undef my @files;
+  foreach my $i (@dir) {
+    my $f="$pre/$dir/$i";
+    if(-f $f) { push @files,"$dir/$i"; }
+    elsif(-d $f) {
+      push @dirs ,"$dir/$i";
+      (my $d2,my $f2)=&dir2array_rec("$dir/$i",$pre);
+      foreach $j (@{$f2}) { push @files,$j; }
+      foreach $j (@{$d2}) { push @dirs ,$j; }}}
+  foreach $i (@dirs)  { $i=~s/^\.\///; }
+  foreach $i (@files) { $i=~s/^\.\///; }
+  return ([@dirs],[@files]); }
+
+sub cmd {
+  my $s=$_[0]; $s=$_[1] if $_[1];
+  my $msg=$_[0] if $_[1];
+  xprint $msg,"$CC_$s$CD_";
+  print $CW_;
+  system "$s";
+  print $CD_; }
+
+# -----------------------------------------------------------------------------
+
+sub makedir {
+  my $dir=$_[0]; $dir=$_[1] if $_[1];
+  my $msg=$_[0] if $_[1];
+  cmd "$msg","mkdir -p $dir" if not -d $dir; }
+
+# copy source to the destination point
+sub xcopy {
+  my $src=$_[0]; my $srcx=$src; $srcx="\"$srcx\"" if $srcx=~/ /;
+  my $dst=$_[1];
+  my $dstdir=$dst; $dstdir=~s/\/[^\/]*$//;
+  my $dstdirx=$dstdir; $dstdirx="\"$dstdirx\"" if $dstdirx=~/ /;
+  makedir "install",$dstdirx if ! -d $dstdirx;
+  if(-f $dst) { return if not `diff -q \"$src\" \"$dst\"`; }
+  cmd "install","cp $srcx $dstdirx"; }
+
+# link dest. file to the point where the source is linked (source is a link)
+sub xlink {
+  my $src=$_[0];
+  my $dst=$_[1]; my $dstx=$dst; $dstx="\"$dstx\"" if $dstx=~/ /;
+  my $dstdir=$dst; $dstdir=~s/\/[^\/]*$//;
+  my $dstdirx=$dstdir; $dstdirx="\"$dstdirx\"" if $dstdirx=~/ /;
+  my $srcl=readlink $src if -l $src;
+  my $srclx=$srcl; $srclx="\"$srclx\"" if $srclx=~/ /;
+  my $dstl=readlink $dst if -l $dst;
+  makedir "install",$dstdirx if ! -d $dstdirx;
+  if(not $dstl eq $srcl) {
+    cmd "install","rm $dstx" if -e $dst;
+    cmd "install","ln -s $srclx $dstx"; }}
+
+# xlink if file is link, xcopy if file is file
+sub xlncp {
+  my $src=$_[0]; my $dst=$_[1];
+  if(   -l $src) { xlink $src,$dst; }
+  elsif(-f $src) { xcopy $src,$dst; }}
+
+# link source directory to destination point
+sub dlink {
+  my $src=$_[0]; my $srcx=$src; $srcx="\"$srcx\"" if $srcx=~/ /;
+  my $dst=$_[1]; my $dstx=$dst; $dstx="\"$dstx\"" if $dstx=~/ /;
+  my $dstl=readlink $dst if -l $dst;
+  if(not $dstl eq $src) {
+    cmd "rm $dstx" if -e $dst;
+    cmd "ln -s $srcx $dstx"; }}
+
+# index file (or link) into directory
+sub xndex {
+  my $src=$_[0]; my $srcx=$src; $srcx="\"$srcx\"" if $srcx=~/ /;
+  my $dst=$_[1]; my $dstx=$dst; $dstx="\"$dstx\"" if $dstx=~/ /;
+  my $dstl=readlink $dst if -l $dst;
+  my $srcl=readlink $src if -l $src;
+  my $dstdir=$dst; $dstdir=~s/\/[^\/]*$//;
+  my $dstdirx=$dstdir; $dstdirx="\"$dstdirx\"" if $dstdirx=~/ /;
+  my $srct=$src; $srct=$srcl if -l $src; # test-src = src or link to it
+  if((not $dstl eq $srct) or (not -l $dst)) {
+    cmd "index","rm $dstx" if -e $dst;
+    if(-l $src) { cmd "index","cp -d $srcx $dstdirx"; }
+    else {        cmd "index","ln -s $srcx $dstx"; }}}
+
+# return basename of file
+sub bnm {
+  my $f=$_[0];
+  $f=~s/^.*\///;
+  return $f; }
+
+# bin/ installer
+sub inst_bin {
+  if($INSTTYPE eq "map") {
+    makedir "bin directory","$BOX/bin"; dlink $BOX,$MAP;
+    foreach $f (@{$TYPE{bin}}) { xlncp $f,"$BOX/bin/".bnm($f); }
+    foreach $f (dir2array "$MAP/bin") { xndex "$MAP/bin/".bnm($f),"/bin/".bnm($f); }
+    return; }
+  if($INSTTYPE eq "dir") {
+    makedir "bin directory","$OPT/bin";
+    foreach $f (@{$TYPE{bin}}) { xlncp $f,"$OPT/bin/".bnm($f); }
+    return; }
+  if($INSTTYPE eq "usr") {
+    makedir "bin directory","$USR/bin";
+    foreach $f (@{$TYPE{bin}}) { xlncp $f,"$USR/bin/".bnm($f); }
+    return; }}
+
+# lib/ installer
+sub inst_lib {
+  if($INSTTYPE eq "map") {
+    makedir "lib directory","$BOX/lib"; dlink $BOX,$MAP;
+    foreach $f (@{$TYPE{lib}}) { xlncp $f,"$BOX/lib/$f"; }
+    foreach $f (dir2array "$MAP/lib") { xndex "$MAP/lib/$f","/lib/$f"; }
+    return; }
+  if($INSTTYPE eq "dir") {
+    makedir "lib directory","$OPT/lib";
+    foreach $f (@{$TYPE{lib}}) { xlncp $f,"$OPT/lib/$f"; }
+    return; }
+  if($INSTTYPE eq "usr") {
+    makedir "lib directory","$USR/lib";
+    foreach $f (@{$TYPE{lib}}) { xlncp $f,"$USR/lib/$f"; }
+    return; }}
+
+# inc/ installer
+sub inst_inc {
+  if($INSTTYPE eq "map") {
+    makedir "inc directory","$BOX/inc/$PKG{package}"; dlink $BOX,$MAP;
+    foreach $f (@{$TYPE{inc}}) { xlncp $f,"$BOX/inc/$PKG{package}/$f"; }
+    (my $dirs,my $files)=dir2array_rec ".","$MAP/inc/$PKG{package}";
+    foreach $f (@{$dirs}) { makedir "dir index","/inc/$PKG{package}/$f"; }
+    foreach $f (@{$files}) { xndex "$MAP/inc/$PKG{package}/$f","/inc/$PKG{package}/$f"; }
+    return; }
+  if($INSTTYPE eq "dir") {
+    makedir "inc directory","$OPT/include/$PKG{package}";
+    foreach $f (@{$TYPE{inc}}) { xlncp $f,"$OPT/include/$PKG{package}/$f"; }
+    return; }
+  if($INSTTYPE eq "usr") {
+    makedir "inc directory","$USR/include/$PKG{package}";
+    foreach $f (@{$TYPE{inc}}) { xlncp $f,"$USR/include/$PKG{package}/$f"; }
+    return; }}
+
+# dat/ path normalizer
+sub datnm {
+  my $f=$_[0];
+  $f=~s/^dat\///;
+  return $f; }
+
+# dat/ installer
+sub inst_dat {
+  if($INSTTYPE eq "map") {
+    makedir "$BOX/dat"; dlink $BOX,$MAP;
+    foreach $f (@{$TYPE{dat}}) { xlncp $f,"$BOX/dat/".datnm($f); }
+    return; }
+  if($INSTTYPE eq "dir") {
+    makedir "$OPT/dat";
+    foreach $f (@{$TYPE{dat}}) { xlncp $f,"$OPT/dat/".datnm($f); }
+    return; }
+  if($INSTTYPE eq "usr") {
+    makedir "$USR/share/$PKG{package}";
+    foreach $f (@{$TYPE{dat}}) { xlncp $f,"$USR/share/$PKG{package}/".datnm($f); }
+    return; }}
+
+# src/ installer (lib.c), differs for local lib.c files and main pkg sources
+sub inst_libc {
+  my $DIR="/tmp";
+  $DIR=$BOX if $INSTTYPE eq "map"; dlink $BOX,$MAP if $INSTTYPE eq "map";
+  $DIR=$OPT if $INSTTYPE eq "dir";
+  $DIR=$USR if $INSTTYPE eq "usr";
+  makedir "lib.c directory","$DIR/lib.c/$PKG{pkgname}"; 
+  foreach $k (keys %FILES) {
+    next if not $FILES{$k}->{type} eq "libc";
+    my $pre=""; # inside lib.c directory prefix
+    if($k=~/^(.*)\/($FILES{$k}->{path})$/) {
+      $pre=$1;				# the prefix directory
+      $pre=~s/^lib\.c\///;		# strip the "lib.c/"
+      $pre="" if $pre eq "lib.c"; }	# nothing if it's full prefix
+    $pre="lib.c/$pre/" if not $pre eq "";
+    my $f=$FILES{$k}->{path};
+    xlncp $f,"$DIR/$pre$f"; }}
+
+# src/ installer (lib.pl), differs for local lib.pl files and main pkg sources
+sub inst_libpl {
+  my $DIR="/tmp";
+  $DIR=$BOX if $INSTTYPE eq "map"; dlink $BOX,$MAP if $INSTTYPE eq "map";
+  $DIR=$OPT if $INSTTYPE eq "dir";
+  $DIR=$USR if $INSTTYPE eq "usr";
+  makedir "lib.pl directory","$DIR/lib.pl/$PKG{pkgname}"; 
+  foreach $k (keys %FILES) {
+    next if not $FILES{$k}->{type} eq "libpl";
+    my $pre=""; # inside lib.pl directory prefix
+    if($k=~/^(.*)\/($FILES{$k}->{path})$/) {
+      $pre=$1;				# the prefix directory
+      $pre=~s/^lib\.pl\///;		# strip the "lib.pl/"
+      $pre="" if $pre eq "lib.pl"; }	# nothing if it's full prefix
+    $pre="lib.pl/$pre/" if not $pre eq "";
+    my $f=$FILES{$k}->{path};
+    xlncp $f,"$DIR/$pre$f"; }}
+
+# install!
+inst_bin if $TYPE{bin};
+inst_dat if $TYPE{dat};
+inst_libc if $TYPE{libc};
+inst_libpl if $TYPE{libpl};
+inst_lib if $TYPE{lib};
+inst_inc if $TYPE{inc};
+
+xprintnl();
+
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------
+# -----------------------------------------------------------------------------

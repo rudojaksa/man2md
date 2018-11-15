@@ -1,0 +1,322 @@
+#!/usr/bin/perl
+$PACKAGE="perlpp";
+$VERSION="0.6";
+$PROJECT="makeutils";
+$COPYLEFT="(c) R.Jaksa 2008, GPLv3";
+
+$CC_="\033[36m"; # color cyan
+$CR_="\033[31m"; # color red
+$CW_="\033[37m"; # color white
+$CD_="\033[0m";  # color default
+
+foreach $i (@ARGV) { if($i eq "-h") { printhelp($0); exit 0; }}
+foreach $i (@ARGV) { if($i eq "-d") { $DEBUG=1; $i=""; last; }}
+foreach $i (@ARGV) { if($i eq "-m") { $MARK=1; $i=""; last; }}
+foreach $i (@ARGV) { if($i eq "-p") { $PREPREPROC=1; $i=""; last; }}
+foreach $i (@ARGV) { if($i eq "-c") { $REMOVECOMMENTS=1; $i=""; last; }}
+foreach $i (@ARGV) { if($i eq "-x") { $OVERWRITE=1; $i=""; last; }}
+
+# appendix files
+@APFILE=();
+for($i=0;$i<$#ARGV;$i++) {
+  if($ARGV[$i] eq "-a" and -f $ARGV[$i+1]) {
+    push @APFILE,$ARGV[$i+1];
+    $ARGV[$i]=""; $ARGV[$i+1]=""; last; }}
+
+# error/debug messages
+sub error { print STDERR $CR_.$_[0].$CD_."\n"; }
+sub debug { print STDERR $CC_.$_[0].$CD_."\n" if $DEBUG; }
+
+# inar(\@a,$i) - check whether the string is in an array
+sub inar { local(*a)=$_[0]; my $s=$_[1];
+  foreach $j (@a) { if($j eq $s) { return(1); }}
+  return(0); }
+
+# the cat
+sub cat {
+  my $file=$_[0];
+  my $s="";
+  open(I,"$file") or error "Can't open file $file ($!).";
+  while (<I>) { $s.=$_; }
+  close(I);
+  return $s; }
+
+# getdirs(\@out,"/path") put names of all dirs from /path into @out
+sub getdirs { local(*dirs)=$_[0]; my $parent=$_[1];
+  opendir(DIR,$parent); my @dir=readdir(DIR); closedir(DIR);
+  foreach my $i (@dir) {
+    next if $i=~/^\./;
+    my $path="$parent/$i";
+    if(-d $path) {
+      push(@dirs,$path);
+      getdirs(\@dirs,$path); }}}
+
+# ---------------------------------------------------------- PREPARE THE GROUND
+
+# get list of subdirectories
+getdirs(\@dirs,".");
+
+# get file to overwrite
+if($OVERWRITE) {
+  undef my @paths; # list of paths already recognized (we look for the last one)
+  foreach my $file (@ARGV) { # cycle through list of requested files
+    next if $file eq ""; # skip empty string(s)
+    my $path;
+    foreach my $dir (".",@dirs) { # look for path of actual file, cycle dirs
+      $path="$dir/$file"; # try every dir
+      next if inar(\@paths,$path); # skip already recognized path
+      last if -f $path; } # now if file on this path exists, it is!
+    $path="./$file" if not -f $path; # if file does not exist, use current dir
+    push @paths,$path; # push this path
+    debug "Overwrite candidate \"$path\".";
+    $OVERWRITEFILE=$path; }
+  debug "We will overwrite the file \"$OVERWRITEFILE\"."; }
+
+# -------------------------------------------------------------- OUTPUT ROUTINE
+
+$OUTPUT=""; # content for the overwriting
+sub output {
+  my $s=$_[0];
+  if($OVERWRITE) { $OUTPUT.=$s; }
+  else { print $s; }}
+
+# --------------------------------------------------------------------- ADDFILE
+
+# process and add given file into output
+sub addfile {
+  my $file=$_[0];
+  my $path;
+  debug "Try to add file \"$file\" to the output.";
+
+  # look for file recursively
+  foreach my $dir (".",@dirs) {
+    $path="$dir/$file";
+    if(inar(\@INCLUDED,$path)) {
+      debug "File \"$path\" was already included.";
+      return; }
+    last if -f $path; }
+  if(not -f $path) {
+    error "File \"$path\" not found (requested as \"$file\").";
+    return; } # not-found file cannot be added, so we return here
+
+  # read the file
+  my $content="";
+  debug "Add the file \"$path\" (requested as \"$file\").";
+  $content=cat($path);
+  push @INCLUDED,$path;
+
+  # preprocessor
+  if($PREPREPROC) {
+    $content=~s/\n\#.*[\n\t ]*$/ /; } # remove comments on last line
+
+  # parse the file
+  my $AFTERCOMMENT=0; # 1 if we are on line just after removed comment
+  foreach $line (split(/\n/,$content)) {
+
+    # remove emty lines after the comment too
+    if($REMOVECOMMENTS and $AFTERCOMMENT) {
+      if($line=~/^\h*$/) { $AFTERCOMMENT=1; next; } # if empty line
+      else	         { $AFTERCOMMENT=0; }}      # otherwise
+
+    # process include lines
+    my $RE=qr/^\h*\#\h*include\h+\"(.*)\"/;
+    if($line=~/$RE/) {
+      output "# START OF THE INCLUDE \"$1\"\n" if $MARK;
+      addfile($1);
+      output "# END OF THE INCLUDE \"$1\"\n" if $MARK;
+      next; }
+
+    # process eval lines
+    my $RE=qr/^\h*\#\h*eval\h+\$(.*)/;
+    if($line=~/$RE/) {
+      my $VAR=$1;
+      my $VAL=$ENV{$VAR};
+      debug "Evaluate directive eval: \$$VAR=\"$VAL\".";
+      output "\$$VAR=\"$VAL\";\n";
+      next; }
+
+    # process debug-labels
+    my $RE=qr/^(.+?)\h*\#\(([a-zA-Z0-9_-]+)\)\#/;
+    if($line=~/$RE/) {
+      my $CODE=$1;
+      my $LABEL=$2;
+      # skip commented out active comment
+      if($CODE=~/^\h*\#/) { next; }
+      # dosomething-if condition;
+      elsif($CODE=~/^\h*(.*)\h+if\h+([^;]*?);(\h*\})?$/) {
+	my $c1=$1; my $c2=$2; my $b2=$3;
+	# print STDERR "=> if($c2) { $APX{$LABEL} $c1; } <=\n";
+	if($c1=~/^(.*)\h?(next|return.*|exit.*)$/) {
+	  output "if($c2) { $APX{$LABEL} $c1; }$b2\n"; }
+	else {
+	  output "if($c2) { $c1; $APX{$LABEL} }$b2\n"; }
+	next; }
+      # ending }
+      elsif($CODE=~/^(.*?)\h*(next;|return.*?;|exit.*?;)?\h*\}([\h\}]*)\h*$/) {
+	my $c1=$1; my $c2=$2; my $b=$3;
+	# print STDERR "=> $c1 $APX{$LABEL} next; }}} <=\n";
+	output "$c1 $APX{$LABEL} $c2 }$b\n"; next; }
+      # otherwise
+      else {
+	# print STDERR "=> $CODE $APX{$LABEL} <=\n";
+	output "$CODE $APX{$LABEL}\n"; next; }}
+
+    # remove comments
+    if($REMOVECOMMENTS) {
+      if($line=~/^\h*\#[^!]/) { # full-line comments
+	$AFTERCOMMENT=1;
+	next; }
+      my $RE=qr/^(.*[;\}])\h*\#.*$/;
+      if($line=~/$RE/) { # comments after semicolon or bracket
+	$line=~s/$RE/$1/;
+	output "$line\n";
+	next; }}
+
+    # regular lines
+    output "$line\n"; }
+
+  # end of file
+  output ""; }
+
+# --------------------------------------------------------- LOAD APPENDIX FILES
+
+%APX=();
+foreach my $file (@APFILE) {
+  my $s=cat($file);
+
+  # read .pl.debug file, look for single-lines with #(xyz)# comments
+  foreach my $line (split /\n/,$s) {
+    next if $line=~/^\h*$/;
+    next if $line=~/^\h*\#/;
+    if($line=~/^\h*(.+?)\h*\#\(([a-zA-Z0-9_-]+)\)\#/) {
+      my $all=$&; my $qall=quotemeta($all);
+      my $code=$1;
+      my $label=$2;
+      $APX{$label}=$code;
+      $s=~s/$qall//; }}
+
+  # read .pl.debug file, look for code blocks starting with #(xyz)# label comment
+  my $RE=qr/\n\h*\#\((.+)\)\#\h*(.*)\n((.|\n)+?)\n\h*?\n/;
+  while($s=~/$RE/) {
+    my $label=$1;
+    my $comment=$2;
+    my $code=$3;
+    $APX{$label}=$code;
+    #$APXCOM{$label}=$comment;
+    $s=~s/$RE/\n\n/; }
+
+  # report the junk left
+  foreach my $line (split /\n/,$s) {
+    next if $line=~/^\h*$/;
+    debug "Dummy code in appendix: $CR_$line$CD_"; }}
+
+# ------------------------------------------------------------------- MAIN LOOP
+
+undef my @INCLUDED; # list of files already included
+
+# add each requested file to the output
+foreach my $file (@ARGV) {
+  next if $file eq "";
+  addfile $file; }
+
+# overwrite file when requested, otherwise output is already printed on stdout
+if($OVERWRITE) {
+  debug "Overwrite the file \"$OVERWRITEFILE\".";
+  if(not open(O,">$OVERWRITEFILE")) {
+    error("Can't open \"$OVERWRITEFILE\" for writing ($!).");
+    exit 1; }
+  print O $OUTPUT;
+  close(O); }
+
+# we are done now!
+exit 0;
+
+# ------------------------------------------------------------------------ HELP
+
+sub printhelp {
+  my $DOLLAR="\$";
+  my $help=<<EOF;
+
+NAME
+    perlpp - perl preprocessor
+
+USAGE
+    perlpp [OPTIONS] FILE [FILE...]
+
+DESCRIPTION
+    The perlpp does preprocess directives in the perl source code.
+
+    If more files are listed, they are concatenated together.  Duplicate
+    files are included only once.  Files are processed in alphabetical
+    order.
+
+    Files are searched for.  Recursively in all subdirectories.
+    Lets have files with the same name ${CW_}a.pl$CD_ in three directories ${CW_}dir1$CD_,
+    ${CW_}dir2$CD_ and ${CW_}dir3$CD_.  We call ${CC_}perlpp a.pl a.pl$CD_, while in the file ${CW_}dir1/a.pl$CD_
+    we have ${CC_}\#include \"a.pl\"$CD_.  The output will be concatenated ${CW_}dir1/a.pl$CD_,
+    ${CW_}dir2/a.pl$CD_, ${CW_}dir3/a.pl$CD_.
+
+DIRECTIVES
+    Spaces between the sharp ${CC_}\#$CD_ and directives names are allowed, but not
+    mandatory.
+
+    ${CC_}\# include \"FILE\"$CD_  Includes given FILE into output.  It recursively
+	looks for the FILE in all subdirectories of current working
+	directory.  Does not include files twice.  Quotation marks
+        are mandatory.
+
+    ${CC_}\# eval \$VARIABLE$CD_  Defines given VARIABLE according to the
+        environment status of such variable when calling the perlpp.
+	Dollar is mandatory.  To define the variable we can use either
+        shell-variable syntax, or regular exported variables:
+
+	${CC_}variable=value perlpp script.pl$CD_
+	${CC_}export variable=value; perlpp script.pl$CD_
+
+	Then, variable will be included into perl code as a line:
+
+	${CC_}\$variable=\"value\";$CD_
+
+DEBUG LABELS
+    The constructs ${CC_}\#(label)\#$CD_ on the end of line are debug labels.
+    Equally labeled lines from the appendix-file will be added to such
+    line in code.  This is useful to unobtrusively add debug or verbose
+    outputs to the code.
+
+    ${CC_}1.$CD_  If the labeled line is ${CC_}dosomething if condition;$CD_ then it will be 
+        rewritten to ${CC_}if(condition) { referencedcode; dosomething; }$CD_.
+
+    ${CC_}2.$CD_  If the labeled line has single pair of ${CC_}{}$CD_ braces, the referenced
+        code from appendix-file will be added just after the opening
+        brace ${CC_}{$CD_.
+
+    ${CC_}3.$CD_  Otherwise, if the labeled line has the closing brace ${CC_}}$CD_ on the
+        end of line, the referenced code will be placed just before it.
+
+    ${CC_}4.$CD_  Otherwise the refernced code is placed on the end of line.
+
+    Appendix-files to be scanned for referenced code have to be specified
+    using ${CC_}-a$CD_ switch.
+
+OPTIONS
+    -a FILE  Appendix-file to be scanned for LABELS and referenced code.
+    -c  Remove comments (most of them).
+    -d  Debug mode.
+    -h  This help.
+    -m  Mark includes in output file (using comments).
+    -p  Input files heuristic prepreprocessing.
+        (as of now, only remove comments on the last line)
+    -x  Overwrite the input file.  The last input file if more then
+        one file is presented.  Such a file must not exist in advance.
+
+VERSION
+    $PACKAGE.$VERSION $COPYLEFT
+
+EOF
+
+$help=~s/(\n|[ \t])(([A-Z\/-]+[ ]?){4,})/$1$CC_$2$CD_/g;
+$help=~s/(\n[ ]*)(-[a-zA-Z0-9]+)([ \t])/$1$CC_$2$CD_$3/g;
+$help=~s/\[([+-])?([A-Z.]+)\]/\[$1$CC_$2$CD_\]/g;
+print $help; }
+
+# -----------------------------------------------------------------------------

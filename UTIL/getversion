@@ -1,0 +1,306 @@
+#!/bin/sh
+
+PACKAGE="getversion"
+VERSION="0.4"
+PROJECT="makeutils"
+COPYLEFT="(c) R.Jaksa 2009, GPLv3"
+
+CC_="\033[36m"; # color cyan
+CG_="\033[32m"; # color green
+CR_="\033[31m"; # color red
+CW_="\033[37m"; # color white
+CD_="\033[0m";  # color default
+
+# --------------------------------------------------------------------- HELP
+
+function printhelp () {
+help="
+${CC_}NAME$CD_
+    getversion - get version information for package
+
+${CC_}USAGE$CD_
+    getversion [${CC_}OPTIONS$CD_]
+
+${CC_}DESCRIPTION$CD_
+    The getversion utility auto-detects the version information for
+    the package rooted in current directory.  It does so by examination
+    of possible configuration files, or filenames.
+    For not identified values the \"unknown\" keyword will be used.
+
+${CC_}OPTIONS$CD_
+    ${CC_}-pkg${CD_}  Print the name of ${CC_}package${CD_} only.
+    ${CC_}-ver${CD_}  Print the ${CC_}version${CD_} number of package only.
+    ${CC_}-prj${CD_}  Print the name of parent ${CC_}project${CD_} for this package.
+    ${CC_}-pnm${CD_}  Print the full ${CC_}package name${CD_}, including the version number.
+    ${CC_}-cpy${CD_}  Print the ${CC_}copyleft${CD_}/copyright announcement of the package.
+    ${CC_}-dot${CD_}  Print the ${CC_}dot${CD_} character between package name and version.
+
+    ${CC_}-h${CD_}       This help.
+    ${CC_}-version${CD_} The version of this (getversion) utility.
+
+${CC_}PERL LANGUAGE$CD_
+    For the perl language, files ${CC_}CONFIG.pl${CD_} and ${CC_}VERSION.pl${CD_} are examined
+    (in this order).  In the case of singlefile package, this single
+    file is examined.  Following code is the example of information,
+    we look for:
+
+    ${CW_}\$PACKAGE=\"package-name\";${CD_}
+    ${CW_}\$VERSION=\"1.13\";${CD_}
+    ${CW_}\$PROJECT=\"project-name\";${CD_}
+    ${CW_}\$COPYLEFT=\"(c) The.Author 2009, GPLv3\";${CD_}
+
+${CC_}C LANGUAGE$CD_
+    In the c language, the ${CC_}VERSION.h${CD_} file is scanned for the code:
+
+    ${CW_}#define PACKAGE \"package-name\"${CD_}
+    ${CW_}#define VERSION \"1.13\"${CD_}
+    ${CW_}#define PROJECT \"project-name\"${CD_}
+    ${CW_}#define COPYLEFT \"(c) The.Author 2009, GPLv3\"${CD_}
+
+${CC_}SHELL SCRIPTS$CD_
+    The shell file (the singlefile package) is scanned for:
+
+    ${CW_}PACKAGE=\"package-name\"${CD_}
+    ${CW_}VERSION=\"1.13\"${CD_}
+    ${CW_}PROJECT=\"project-name\"${CD_}
+    ${CW_}COPYLEFT=\"(c) The.Author 2009, GPLv3\"${CD_}
+
+${CC_}VERSION FILE$CD_
+    In other types of packages the ${CC_}VERSION${CD_} file can be used.
+    It's syntax is:
+
+    ${CW_}PACKAGE: package-name${CD_}
+    ${CW_}VERSION: 1.13${CD_}
+    ${CW_}PROJECT: project-name${CD_}
+    ${CW_}COPYLEFT: The.Author 2009, GPLv3${CD_}
+
+${CC_}HEAD COMMENT$CD_
+    Alternatively a note in head comment of file (a comment in first
+    ten lines of file) can be used.  Keywords are Version, Copyleft,
+    Copyright, and (c) or (C).  For instance:
+
+    ${CW_}/* Package ABC Version 2.13, Copyleft The.Author 2009, GPLv3 */${CD_}
+
+${CC_}VERSION$CD_
+    ${PACKAGE}.$VERSION $COPYLEFT
+
+"
+printf "$help"
+exit 0; }
+
+# --------------------------------------------------------------------- ARGS
+
+for arg in $*; do
+ if   test $arg = "-h";	then printhelp; exit 0;
+ elif test $arg = "-version"; then echo $VERSION; exit 0;
+ elif test $arg = "-pkg"; then PKG_ONLY=1
+ elif test $arg = "-ver"; then VER_ONLY=1
+ elif test $arg = "-prj"; then PRJ_ONLY=1
+ elif test $arg = "-pnm"; then PNM_ONLY=1
+ elif test $arg = "-cpy"; then CPY_ONLY=1
+ elif test $arg = "-dot"; then DOT_ONLY=1; fi
+done
+
+PKG="" # PACKAGE
+VER="" # VERSION
+PRJ="" # PROJECT
+PNM="" # PKGNAME
+CPY="" # COPYLEFT
+DOT="." # DOT is the character between PKG and VER in PNM
+
+# --------------------------------------------------------- SINGLEFILE CHECK
+
+if test `find . -type f | wc -l` -eq 1;	then SINGLEFILE=yes;
+  SINGLEFILE_FILE=`find . -type f | sed s:^./::`
+  SINGLEFILE_BASENAME=`echo $SINGLEFILE_FILE | sed 's:\..*$::'`
+  if   grep -q -E '^#![	 ]*/.*/perl' *;	then SINGLEFILE=perl;
+  elif grep -q -E '^#![	 ]*/.*/sh' *;	then SINGLEFILE=sh; fi
+fi
+
+# ------------------------------------------------------------ GET VARIABLES
+
+function getvar () { CMD=$1;
+if test "x$FILE" != "x"; then
+  S="read from file $CG_$FILE$CD_"
+  X=`$CMD "$FILE" PACKAGE`;   if test "x$X" != "x"; then PKG=$X; PKGs=$S; fi
+  X=`$CMD "$FILE" VERSION`;   if test "x$X" != "x"; then VER=$X; VERs=$S; fi
+  X=`$CMD "$FILE" PROJECT`;   if test "x$X" != "x"; then PRJ=$X; PRJs=$S; fi
+  X=`$CMD "$FILE" COPYLEFT`;  if test "x$X" != "x"; then CPY=$X; CPYs=$S; fi
+  X=`$CMD "$FILE" COPYRIGHT`; if test "x$X" != "x"; then CPY=$X; CPYs=$S; fi
+fi; }
+
+# --------------------------------------------------------------------- PERL
+
+function perlvar () {
+  cat "$1" |\
+  grep "\$$2=" | head -n 1 |\
+  sed "s:\$$2=\"\?::" |\
+  sed "s:\"\?;::"; }
+
+if test "x$SINGLEFILE" = "xperl"; then FILE=$SINGLEFILE_FILE;
+elif test -f CONFIG.pl;	 then FILE=CONFIG.pl
+elif test -f VERSION.pl; then FILE=VERSION.pl
+else # look for the first perl file with "$PACKAGE=" instead
+  IFS="\n"; for i in *; do
+    if grep -q -E '^#![	 ]*/.*/perl' "$i"; then true; else continue; fi
+    if grep -q -E       '\$PACKAGE=' "$i"; then true; else continue; fi
+    FILE="$i"; break;
+  done; IFS=" "
+fi
+
+getvar perlvar
+
+# ----------------------------------------------------------------------- SH
+
+function shvar () {
+  cat "$1" |\
+  grep "^[ 	]*$2=\"\?[a-zA-Z0-9.,\(\)_-]\+\"\?" | head -n 1 |\
+  sed "s:$2=\"\?::" |\
+  sed "s:;$::" |\
+  sed "s:\"$::"; }
+
+if test "x$SINGLEFILE" = "xsh"; then FILE=$SINGLEFILE_FILE;
+else FILE=""
+fi
+
+getvar shvar
+
+# ------------------------------------------------------------------------ C
+
+function cvar () {
+  cat "$1" |\
+  grep "^[ 	]*\#[ 	]*define[ 	]\+$2[ 	]\+" | head -n 1 |\
+  sed "s:.*define[ 	]\+$2[ 	]\+::" |\
+  sed "s:^\"::" |\
+  sed "s:\"$::"; }
+
+if test -f VERSION.h; then FILE=VERSION.h
+else FILE=""
+fi
+
+getvar cvar
+
+# ---------------------------------------------------------------------- CFG
+
+function cfgvar () {
+  cat "$1" |\
+  grep "$2: " | head -n 1 |\
+  sed "s/$2: //"; }
+
+if test -f VERSION; then FILE=VERSION
+fi
+
+getvar cfgvar
+
+# ------------------------------------------------------ SINGLEFILE FILENAME
+
+if test "x$PKG" = "x"; then
+  if test "x$SINGLEFILE" != "x"; then
+    PKG=$SINGLEFILE_BASENAME
+    PKGs="from filename $CG_$SINGLEFILE_FILE$CD_"
+  fi
+fi
+
+# ------------------------------------------------ VERSION FROM HEAD COMMENT
+
+function verhead () {
+  head "$1" | grep "Version" | sed 's:.*Version \([0-9.]*\).*$:\1:'; }
+
+if test "x$VER" = "x"; then
+  if test "x$SINGLEFILE" != "x"; then
+    VER_HEAD=`verhead "$SINGLEFILE_FILE"`
+    if test "x$VER_HEAD" != "x"; then
+      VER=$VER_HEAD
+      VERs="from head-comment in $CG_$SINGLEFILE_FILE$CD_"
+    fi
+  fi
+fi
+
+# ----------------------------------------------- COPYLEFT FROM HEAD COMMENT
+
+function copyleft_head () {
+  head "$1" | grep "[Cc]opyleft" | sed 's:.*[Cc]opyleft \(.*\)$:\1:'; }
+function copyright_head () {
+  head "$1" | grep "[Cc]opyright" | sed 's:.*[Cc]opyright \(.*\)$:\1:'; }
+function cbracket_head () {
+  head "$1" | grep "([Cc])" | sed 's:.*([Cc]) \(.*\)$:\1:'; }
+
+if test "x$CPY" = "x"; then
+  if test "x$SINGLEFILE" != "x"; then
+    if test "x$CPY_HEAD" = "x"; then CPY_HEAD=` copyleft_head "$SINGLEFILE_FILE"`; fi
+    if test "x$CPY_HEAD" = "x"; then CPY_HEAD=`copyright_head "$SINGLEFILE_FILE"`; fi
+    if test "x$CPY_HEAD" = "x"; then CPY_HEAD=` cbracket_head "$SINGLEFILE_FILE"`; fi
+    if test "x$CPY_HEAD" != "x"; then
+      CPY=$CPY_HEAD
+      CPYs="from head-comment in $CG_$SINGLEFILE_FILE$CD_"
+    fi
+  fi
+fi
+
+# ------------------------------------------------------------------ DERIVED
+
+# NUMEND is the last digit of pkg, if it ends by digit
+NUMEND=`echo $PKG | sed 's:^.*\([0-9]\)$:\1:' | sed 's:[^0-9]*::'`
+if test "x$NUMEND" != "x"; then DOT="-"; fi
+
+if test "x$PKG" != "x"; then
+  if test "x$VER" != "x"; then
+    PNM="$PKG$DOT$VER"
+    PNMs="derived from $CC_$PKG$CD_ & $CC_$VER$CD_"
+  else
+    PNM="$PKG"
+    PNMs="derived from $CC_$PKG$CD_"
+  fi
+fi
+
+if test "x$PRJ" = "x" -a "x$PKG" != "x"; then
+  PRJ="$PKG"
+  PRJs="derived from $CC_$PKG$CD_"
+fi
+
+# ----------------------------------------------------------------- UNKNOWNS
+
+if test "x$PKG" = "x"; then PKG="unknown"; fi
+if test "x$VER" = "x"; then VER="unknown"; fi
+if test "x$PRJ" = "x"; then PRJ="unknown"; fi
+if test "x$PNM" = "x"; then PNM="unknown"; fi
+if test "x$CPY" = "x"; then CPY="unknown"; fi
+
+# ---------------------------------------------------------- CUSTOM PRINTOUT
+
+if test "x$PKG_ONLY" != "x"; then echo "$PKG"; exit 0; fi
+if test "x$VER_ONLY" != "x"; then echo "$VER"; exit 0; fi
+if test "x$PRJ_ONLY" != "x"; then echo "$PRJ"; exit 0; fi
+if test "x$PNM_ONLY" != "x"; then echo "$PNM"; exit 0; fi
+if test "x$CPY_ONLY" != "x"; then echo "$CPY"; exit 0; fi
+if test "x$DOT_ONLY" != "x"; then echo "$DOT"; exit 0; fi
+
+# --------------------------------------------------------- DEFAULT PRINTOUT
+
+if test "x$SINGLEFILE" != "x"; then
+  printf "singlefile: $CG_$SINGLEFILE_FILE$CD_"
+  if test "x$SINGLEFILE" != "xyes"; then printf " (language $SINGLEFILE)"; fi
+  printf "\n"
+fi
+
+printf "   package: $CC_$PKG$CD_"
+if test "x$PKGs" != "x"; then printf " ($PKGs)"; fi
+printf "\n"
+
+printf "   version: $CC_$VER$CD_"
+if test "x$VERs" != "x"; then printf " ($VERs)"; fi
+printf "\n"
+
+printf "   project: $CC_$PRJ$CD_"
+if test "x$PRJs" != "x"; then printf " ($PRJs)"; fi
+printf "\n"
+
+printf "   pkgname: $CC_$PNM$CD_"
+if test "x$PNMs" != "x"; then printf " ($PNMs)"; fi
+printf "\n"
+
+printf "  copyleft: $CC_$CPY$CD_"
+if test "x$CPYs" != "x"; then printf " ($CPYs)"; fi
+printf "\n"
+
+# --------------------------------------------------------------------------
