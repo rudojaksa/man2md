@@ -18,4 +18,3 @@ formatted, into the markdown format suitable for the github README.md.
 ### VERSION
 man2md-0.1 (c) R.Jaksa 2018 GPLv3
 
-
