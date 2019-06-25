@@ -1,6 +1,6 @@
 
 $PACKAGE="man2md";
-$VERSION="0.1";
+$VERSION="0.2";
 $PROJECT="webutils";
 $COPYLEFT="(c) R.Jaksa 2018 GPLv3";
 

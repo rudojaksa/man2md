@@ -9,23 +9,30 @@ NAME
     man2md - man to (github) markdown convertor
 
 USAGE
+    man topic | man2md [OPTIONS]
+    or
     man topic > topic.txt
-    man2md topic.txt > topic.md
-
-    or:
-    man topic | man2md
+    man2md [OPTIONS] topic.txt > topic.md
 
 DESCRIPTION
     Man2md just converts manpage or an interactive help, if it is man-like
-    formatted, into the markdown format suitable for the github README.md.
+    formatted, into the markdown format suitable for the github CD(README.md).
 
 OPTIONS
-    -h  This help.
+      -h  This help.
+  -p SEC  Treat a section with name containig the SEC string (glob) as a
+          preformatted.  Comma separated list is accepted too.
 
 EOF
 
 # ------------------------------------------------------------------------------ ARGVS
 foreach(@ARGV) { if($_ eq "-h") { printhelp $HELP; exit 0; }}
+
+our @PRES;
+for($i=0;$i<$#ARGV;$i++) {
+  if($ARGV[$i] eq "-p" and $ARGV[$i+1]) {
+    push @PRES,$ARGV[$i+1];
+    $ARGV[$i]=""; $ARGV[$i+1]=""; }}
 
 our $INPUT;
 foreach(@ARGV) {
@@ -94,6 +101,7 @@ REPORTING BUGS
 COPYRIGHT
 SEE ALSO
 EOF
+our @REG = split /\n/,$REG;
 
 # list of sections always treated as preformatted
 $PRE=<<EOF;
@@ -103,13 +111,27 @@ SYNOPSIS
 EXAMPLES
 EXAMPLE
 EOF
-
-our @REG = split /\n/,$REG;
 our @PRE = split /\n/,$PRE;
+
+# preformatted, as requested from commandline
+our @PRESRE;
+foreach my $pres (@PRES) {
+  foreach my $s (split /,/,$pres) {
+    $s =~ s/\*/.*/g;
+    $s =~ s/\?/./g;
+    push @PRESRE,"^$s\$"; }}
+# foreach(@PRESRE) { print " -- $_\n"; } exit;
+
+sub presre {
+  my $s = $_[0];
+  foreach my $re (@PRESRE) {
+    return 1 if $s =~ /$re/; }
+  return 0; }
 
 our %TYPE; # 1=REG 2=PRE
 foreach my $h (@HEAD) {
-  if(inar \@REG,$h) { $TYPE{$h}=1; } # always regular
+  if(presre $h) { $TYPE{$h}=2; } # requested to be preformatted
+  elsif(inar \@REG,$h) { $TYPE{$h}=1; } # always regular
   elsif(inar \@PRE,$h) { $TYPE{$h}=2; } # always preformatted
   elsif($BODY{$h}=~/(^|\n)\h*-[a-zA-Z0-9]/) { $TYPE{$h}=2; } # seems, list of options included
   elsif($BODY{$h}=~/(^|\n)\h*+[a-zA-Z0-9]/) { $TYPE{$h}=2; } # seems, list of + options included
