@@ -1,28 +1,21 @@
 PATH := $(PATH):UTIL
 SRC  := $(shell find . -type f -name '*.pl' | grep -v OFF/ | xargs grep -l '\#!' | cut -b3-)
-BIN  := $(SRC:%.pl=%)
+T    := $(SRC:%.pl=%)
 
-all: $(BIN) README.md
+all: $T
 
 %: %.pl *.pl
 	perlpp $< > $@
 	@chmod 755 $@
 
 install: all
-	makeinstall -f $(BIN)
+	makeinstall -f $T
 
 clean:
-	rm -fv $(BIN)
-
-push: all
-	make clean
-	git add .
-	git commit -m update
-	git push -f origin master
-
-mrproper: clean
 	rm -fv README.md
+	rm -fv $T
 
-README.md: $(BIN)
+README.md: $T
 	$< -h | man2md > $@
 
+include ~/.github/Makefile.git
